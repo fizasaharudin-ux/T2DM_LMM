@@ -80,9 +80,7 @@ All three intervention groups differed significantly from each other at the stud
 ```
 T2DM_LMM/
 ├── T2DM_LMM.qmd                                   # Main analysis — Quarto Markdown source
-├── T2DM-LMM.html                                  # Rendered output
 ├── t2dm_longitudinal_strong_60000_rows (1).csv    # Excel raw dataset (downloaded from Kaggle - link at acknowledgement)
-├── style.css                                      # Custom CSS for HTML output
 └── README.md                                      # This file
 ```
 
