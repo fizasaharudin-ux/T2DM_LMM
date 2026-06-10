@@ -1,0 +1,909 @@
+---
+title: "Glycaemic Trajectories in Type 2 Diabetes: A Linear Mixed Effects Model of Intervention and Lifestyle Determinants"
+author: "Hafizah"
+date: "2026-06-04"
+format:
+  html:
+    theme: flatly
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    code-fold: true
+    code-tools: true
+    number-sections: false
+    fig-width: 9
+    fig-height: 5
+    highlight-style: kate
+    df-print: paged
+    css: style.css
+    embed-resources: true
+execute:
+  warning: false
+  message: false
+---
+
+# Introduction
+
+Type 2 Diabetes Mellitus (T2DM) is a chronic metabolic disease characterised by persistent hyperglycaemia and is a leading cause of cardiovascular disease, renal failure, and premature mortality worldwide. Glycated haemoglobin (HbA1c) is the primary clinical marker used to monitor long-term glycaemic control, reflecting average blood glucose levels over the preceding two to three months. Reducing HbA1c through targeted lifestyle and pharmacological interventions remains a central goal of T2DM management.
+
+This study uses a longitudinal dataset of **20,000 T2DM patients**, each measured at three time points — pre-intervention (T1\_Pre), mid-intervention (T2\_Mid), and post-intervention (T3\_Post) — capturing a wide range of patient-level characteristics including demographics, lifestyle behaviours, clinical markers, and intervention type.
+
+---
+
+## Research Question
+
+Among patients with Type 2 Diabetes Mellitus, do different intervention strengths (Weak, Standard, Intensive) produce different trajectories of HbA1c change over time, after adjusting for demographic, lifestyle, and clinical covariates?
+
+---
+
+## Objectives
+
+### Primary Objective
+
+To determine whether intervention strength (Weak, Standard, Intensive) produces significantly different HbA1c trajectories over time.
+
+### Secondary Objectives
+
+1. To quantify the overall change in HbA1c over time, independent of intervention group or patient characteristics (unconditional growth model).
+2. To identify which patient-level demographic, lifestyle, and clinical factors are independently associated with HbA1c (full fixed-effects model).
+3. To estimate and compare adjusted mean HbA1c at each time point across intervention groups using estimated marginal means (EMMs), and to determine whether all three intervention groups differ significantly from each other at the study endpoint.
+
+---
+
+Because each patient contributes three repeated measurements, standard multiple linear regression (MLR) is inappropriate — observations from the same patient are not independent. A **Linear Mixed Effect Model (LMM)** with a random intercept per patient is used to correctly partition within-patient change from stable between-patient differences.
+
+---
+
+This analysis follows the **REAAAPP** workflow:
+
+> **R**ead → **E**DA → **A**ssumptions → **A**nalyse → **A**ssess → **P**resent → **P**ublish
+
+---
+
+## Study Variables
+
+The dataset contains the following variables. Understanding their roles before modelling prevents misspecification and aids interpretation of regression coefficients.
+
+**Outcome variable**
+
+| Variable | Type | Description |
+|---|---|---|
+| `hb_a1c` | Continuous | HbA1c (%) — primary measure of glycaemic control; the dependent variable in all models |
+
+**Time variable**
+
+| Variable | Type | Description |
+|---|---|---|
+| `time_step` | Ordered factor | Study time point: T1\_Pre (baseline), T2\_Mid, T3\_Post |
+| `time_num` | Numeric (0/1/2) | Numeric encoding of time — required for the random slope model |
+
+**Primary exposure (intervention)**
+
+| Variable | Type | Levels |
+|---|---|---|
+| `intervention_strength` | Ordered factor | Weak *(ref)*, Standard, Intensive |
+
+**Demographic covariates**
+
+| Variable | Type | Description |
+|---|---|---|
+| `age` | Continuous | Age in years |
+| `gender` | Factor | Male *(ref)*, Female |
+
+**Lifestyle covariates**
+
+| Variable | Type | Description |
+|---|---|---|
+| `physical_activity_level` | Ordered factor | Low *(ref)*, Moderate, High |
+| `diet_score` | Continuous | Dietary quality score; higher = better |
+| `sleep_hours` | Continuous | Average daily sleep (hours) |
+
+**Clinical covariates**
+
+| Variable | Type | Description |
+|---|---|---|
+| `bmi` | Continuous | Body Mass Index (kg/m²) |
+| `glucose_level` | Continuous | Fasting blood glucose (mg/dL); included in Table 1 but excluded from models to avoid collinearity with HbA1c |
+| `medication_adherence` | Ordered factor | Poor *(ref)*, Moderate, Good |
+| `comorbidity_level` | Ordered factor | Low *(ref)*, Medium, High |
+
+**Administrative variables**
+
+| Variable | Type | Description |
+|---|---|---|
+| `patient_id` | Factor | Unique patient identifier; used as the random-intercept grouping variable |
+| `outcome` | Character | Binary label (Controlled / Uncontrolled); used descriptively in Table 1 only |
+
+> **Reference level convention:** All ordered factors are set with the worst or least favourable category as the reference. Regression coefficients therefore represent improvements (or worsening) relative to the most clinically unfavourable state.
+
+---
+
+# Load packages
+
+All required packages are loaded upfront using `pacman::p_load()`, which installs any missing packages automatically before loading them. Loading all packages at the top of the script ensures reproducibility and makes dependencies immediately visible to any reader.
+
+Key packages and their roles:
+
+| Package | Role |
+|---|---|
+| `tidyverse` | Data wrangling and visualisation |
+| `janitor` | Clean column names to snake\_case |
+| `skimr`, `DataExplorer` | Quick EDA summaries and missing-value plots |
+| `corrplot` | Correlation matrix visualisation |
+| `gtsummary` | Publication-ready Table 1 |
+| `lme4`, `lmerTest` | Fit LMMs; Satterthwaite p-values |
+| `performance`, `MuMIn` | ICC, marginal and conditional R² |
+| `emmeans` | Estimated marginal means after interaction |
+| `sjPlot` | Publication-ready model tables and forest plots |
+| `patchwork` | Combine multiple ggplot2 figures |
+
+```{r}
+if (!require("pacman")) install.packages("pacman")
+
+pacman::p_load(
+  tidyverse,
+  janitor,
+  here,
+  skimr,
+  DataExplorer,
+  corrplot,
+  gtsummary,
+  broom,
+  broom.mixed,
+  gt,
+  kableExtra,
+  car,
+  lmtest,
+  MASS,
+  lme4,
+  lmerTest,
+  sjPlot,
+  performance,
+  MuMIn,
+  emmeans,
+  ggplot2,
+  patchwork,
+  broom.helpers)
+```
+
+---
+
+# READ Data
+
+The raw CSV file is loaded using `read_csv()` from the `readr` package (part of `tidyverse`). Column names are immediately standardised to snake\_case using `janitor::clean_names()` — this converts names like `PatientID` or `HbA1c (%)` into clean, consistent names like `patient_id` and `hb_a1c` that are safe to use in R without backticks.
+
+- `glimpse()` provides a transposed summary showing every column name, its data type, and the first few values — useful for a rapid structural check.
+- `head()` displays the first six rows to verify the data loaded correctly and to get a feel for the raw values.
+
+```{r}
+df_raw <- read_csv("t2dm_longitudinal_strong_60000_rows (1).csv") |>
+  janitor::clean_names()
+
+glimpse(df_raw)
+head(df_raw)
+```
+
+---
+
+## Factor encoding
+
+Before any analysis, categorical variables must be converted from character or numeric types into R `factor` objects with **explicitly defined levels**. This step is critical for two reasons:
+
+1. **Correct reference category:** R uses the first factor level as the reference in regression. By setting the clinically "worst" state as the first level (e.g., Poor adherence, Weak intervention, Low activity), all coefficients measure improvement relative to the worst-case baseline — making results clinically intuitive.
+2. **Correct ordering:** Ordered levels (e.g., Low → Moderate → High) ensure that plots, tables, and contrast tests appear in the correct sequence rather than alphabetically.
+
+A numeric version of time (`time_num`: 0, 1, 2) is also created here — it is required by the random slope model, which needs a continuous numeric variable to estimate individual rates of change.
+
+```{r}
+df <- df_raw |>
+  mutate(
+    patient_id            = factor(patient_id),
+    time_step             = factor(time_step,
+                                   levels = c("T1_Pre", "T2_Mid", "T3_Post")),
+    time_num              = case_when(
+      time_step == "T1_Pre"  ~ 0,
+      time_step == "T2_Mid"  ~ 1,
+      time_step == "T3_Post" ~ 2),
+    gender                = factor(gender,
+                                   levels = c("Male", "Female")),
+    physical_activity_level = factor(physical_activity_level,
+                                     levels = c("Low", "Moderate", "High")),
+    medication_adherence  = factor(medication_adherence,
+                                   levels = c("Poor", "Moderate", "Good")),
+    intervention_strength = factor(intervention_strength,
+                                   levels = c("Weak", "Standard", "Intensive")),
+    comorbidity_level     = factor(comorbidity_level,
+                                   levels = c("Low", "Medium", "High")))
+
+df
+```
+
+Factor levels are set manually based on clinical logic — not alphabetically. Reference levels (first level listed) are the worst/baseline clinical state: Poor adherence, Weak intervention, Low comorbidity. All regression coefficients are interpreted relative to these references.
+
+---
+
+# EDA: High-Level Summary
+
+Exploratory Data Analysis (EDA) is performed before any modelling to understand the data structure, detect problems (missing values, impossible values, distributional issues), and build intuition about the relationships between variables. Skipping EDA risks fitting models on dirty or misunderstood data and misinterpreting results.
+
+Three complementary checks are performed:
+
+1. `skimr::skim()` — a one-shot data profile for all variables simultaneously
+2. `colSums(is.na())` — a numeric count of missing values per column
+3. `DataExplorer::plot_missing()` — a visual representation of missingness
+
+```{r}
+skimr::skim(df)
+colSums(is.na(df))
+DataExplorer::plot_missing(df)
+```
+
+`skimr::skim()` produces a comprehensive one-shot summary: n, n\_missing, mean, SD, min, p25, median, p75, max, and a miniature histogram per numeric variable. `colSums(is.na(df))` counts missing values per column — all counts = 0, confirming there are **no missing values** in this dataset and no imputation is needed before modelling.
+
+---
+
+## Balance Check
+
+A longitudinal dataset is **balanced** if every subject contributes the same number of observations at the same time points. This check confirms whether the data is a balanced panel (every patient appears exactly 3 times — once per time point) or whether some patients have missing visits. LMM handles unbalanced data correctly, but confirming balance here ensures the dataset is as expected and that no data entry issues have created phantom or duplicated rows.
+
+```{r}
+df |> count(time_step)                 # expect 20,000 per time point
+df |> count(patient_id) |> summary()  # expect min = max = 3
+```
+
+A balanced panel (every patient has exactly 3 observations) means no issues with unequal cluster sizes. Both LMM and GEE handle unbalanced data, but confirming balance rules out data quality issues such as duplicate rows or missing visits.
+
+---
+
+## Trajectory Plots
+
+Trajectory plots visualise *how* the outcome variable (HbA1c) changes over time — both at the individual patient level and at the group level. These plots serve two purposes before modelling:
+
+1. They provide a visual check that HbA1c is indeed changing over time (confirming the need for a longitudinal model rather than a cross-sectional one).
+2. They reveal whether individual patients vary substantially in their baseline level and/or their rate of change — the key visual justification for including random effects.
+
+### Spaghetti Plot
+
+```{r}
+#| fig-width: 8
+#| fig-height: 5
+
+set.seed(123)
+sample_pts <- sample(levels(df$patient_id), 100)
+
+ggplot(df |> filter(patient_id %in% sample_pts),
+       aes(x = time_step, y = hb_a1c, group = patient_id)) +
+  geom_line(alpha = 0.25, colour = "steelblue") +
+  stat_summary(aes(group = 1), fun = mean, geom = "line",
+               colour = "red", linewidth = 1.2) +
+  labs(title = "Figure 1: HbA1c Trajectories over 3 point times (n = 100 patients; red = group mean)",
+       x = "Time Point", y = "HbA1c (%)") +
+  theme_bw()
+```
+
+A spaghetti plot draws one line per patient across the three time points, overlaid with the group mean trajectory (red line). Plotting a random sample of 100 patients (rather than all 20,000) keeps the figure readable while still representing the full range of individual trajectories.
+
+**How to read this plot:**
+
+- A descending red line confirms HbA1c is improving on average over time.
+- Wide spread of blue lines (patients far above and below the mean) indicates strong **between-patient heterogeneity** — patients differ substantially in their baseline HbA1c levels. This heterogeneity is quantified by the ICC and is the primary reason LMM is needed.
+- Lines that cross (non-parallel) suggest patients also differ in their *rate* of change — justifying consideration of a random slope model.
+
+
+### Trajectory by Intervention Strength
+
+```{r}
+#| fig-width: 9
+#| fig-height: 5
+
+df |>
+  group_by(time_step, intervention_strength) |>
+  summarise(mean_hba1c = mean(hb_a1c), .groups = "drop") |>
+  ggplot(aes(x = time_step, y = mean_hba1c,
+             colour = intervention_strength, group = intervention_strength)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 3) +
+  scale_colour_manual(values = c("Weak" = "#e74c3c",
+                                 "Standard" = "#f39c12",
+                                 "Intensive" = "#27ae60")) +
+  labs(title = "Figure 2: Mean HbA1c Over Time by Intervention Strength",
+       x = "Time Point", y = "Mean HbA1c (%)",
+       colour = "Intervention") +
+  theme_bw()
+```
+
+This plot aggregates HbA1c to the group mean at each time point, separately for each level of intervention strength. Unlike the spaghetti plot (which shows individual variability), this plot reveals **group-level patterns** in the outcome.
+
+**How to read this plot:**
+
+- If lines for Weak, Standard, and Intensive intervention run **parallel**, there is no interaction — the intervention effect is the same at all time points.
+- If lines **diverge** over time (e.g., the Intensive group drops faster), this is a visual signal of a **time × intervention interaction** — meaning the effect of intervention on HbA1c depends on when it is measured. This motivates the `lmm_int` interaction model later.
+
+
+### Correlation Matrix
+
+```{r}
+#| fig-width: 7
+#| fig-height: 6
+
+cont_vars <- df |>
+  dplyr::select(where(is.double))
+
+cor_matrix <- cor(as.matrix(cont_vars), use = "complete.obs")
+corrplot::corrplot(cor_matrix, method = "color", type = "upper",
+                   addCoef.col = "black", tl.col = "black", tl.srt = 45)
+```
+
+The correlation matrix displays pairwise Pearson correlations between all continuous variables. This is an important pre-modelling check for **multicollinearity** — when two predictors are highly correlated (|r| > 0.8), including both in the same model causes unstable, inflated standard errors and makes coefficients difficult to interpret.
+
+**How to read this plot:**
+
+- Colour intensity and direction (blue = positive, red = negative) indicate the strength and direction of each pairwise correlation.
+- Coefficients printed on the cells give the exact correlation value.
+- Any pair with |r| > 0.8 warrants removing one variable or combining them before fitting the model.
+- `use = "complete.obs"` handles any residual pairwise missingness gracefully.
+
+---
+
+## Baseline Characteristics
+
+```{r}
+df |>
+  filter(time_step == "T1_Pre") |>
+  dplyr::select(age, gender, bmi, hb_a1c, glucose_level,
+                physical_activity_level, diet_score, sleep_hours,
+                medication_adherence, intervention_strength,
+                comorbidity_level, outcome) |>
+  tbl_summary(
+    statistic = list(
+      all_continuous()  ~ "{mean} ({sd})",
+      all_categorical() ~ "{n} ({p}%)"
+    ),
+    missing = "no",
+    label = list(
+      age                 ~ "Age (year)",
+      gender              ~ "Gender",
+      hb_a1c              ~ "HbA1c (%)",
+      glucose_level       ~ "Glucose Level (mg/dL)",
+      bmi                 ~ "BMI (kg/m²)",
+      diet_score          ~ "Diet Score",
+      sleep_hours         ~ "Sleep Hours",
+      physical_activity_level ~ "Physical Activity Level",
+      medication_adherence    ~ "Medication Adherence",
+      intervention_strength   ~ "Intervention Strength",
+      comorbidity_level       ~ "Comorbidity Level",
+      outcome                 ~ "Outcome"
+    )
+  ) |>
+  bold_labels() |>
+  modify_caption("**Table 1. Baseline Characteristics (n = 20,000)**")
+```
+
+Table 1 is the standard descriptive table in clinical research papers. It characterises the study sample at **baseline (T1\_Pre only)** before any intervention effect has occurred. Filtering to T1\_Pre is essential — including all three time points would triple-count each patient and inflate n to 60,000, misrepresenting the actual cohort size of 20,000.
+
+---
+
+# ASSUMPTIONS
+
+Before fitting an LMM, two key assumptions must be checked:
+
+1. **Normality of the outcome** — LMM assumes the outcome (HbA1c) is approximately normally distributed, or equivalently, that the model residuals follow a normal distribution.
+2. **Non-independence of observations (clustering)** — LMM is only necessary if observations within the same patient are correlated. The Intraclass Correlation Coefficient (ICC) quantifies this correlation. If ICC is negligible (< 0.05), ordinary MLR would be sufficient.
+
+Both assumptions are checked below using visual and statistical methods.
+
+## Assumption 1: Normality of HbA1c
+
+```{r}
+#| fig-width: 10
+#| fig-height: 4
+
+par(mfrow = c(1, 2))
+qqnorm(df$hb_a1c, main = "Q-Q Plot: HbA1c")
+qqline(df$hb_a1c, col = "red")
+hist(df$hb_a1c, breaks = 50, main = "Distribution of HbA1c",
+     xlab = "HbA1c (%)", col = "steelblue", border = "white")
+par(mfrow = c(1, 1))
+```
+
+Two complementary visual tools are used to assess normality:
+
+- **Q-Q plot (Quantile-Quantile plot):** Plots the quantiles of the observed HbA1c data against the theoretical quantiles of a normal distribution. If the data are normally distributed, points will fall tightly along the diagonal red reference line. Systematic S-shaped curves or heavy tails indicate departures from normality.
+- **Histogram:** Shows the frequency distribution of HbA1c values. A bell-shaped, symmetric distribution centred around the mean indicates approximate normality.
+
+> **Important note on sample size:** With n = 60,000 observations, the Shapiro-Wilk test should **not** be used. At large n, it will always reject H₀ (p < 0.05) even for trivially small, clinically irrelevant deviations from normality. Visual inspection is the appropriate approach here. LMM is also relatively robust to mild normality violations, especially in large samples, due to the Central Limit Theorem.
+
+
+## Assumption 2: Clustering — ICC from Null LMM
+
+```{r}
+m_null <- lmer(hb_a1c ~ 1 + (1 | patient_id), data = df, REML = TRUE)
+performance::icc(m_null)
+```
+
+To quantify clustering, an **intercept-only (null) LMM** is fitted — a model with no predictors, only a random intercept for each patient. The ICC is then extracted from the ratio of between-patient variance to total variance:
+
+$$\text{ICC} = \frac{\sigma^2_{\text{between}}}{\sigma^2_{\text{between}} + \sigma^2_{\text{within}}}$$
+
+- **ICC = 0** → no clustering; all variation is random within patients; MLR is adequate.
+- **ICC > 0.05** → meaningful clustering; LMM or GEE required.
+- **ICC close to 1** → almost all variation is due to stable patient-level differences; within-patient change is small.
+
+**Result:** ICC = 0.813. This means **81.3%** of the total variance in HbA1c is attributable to stable, persistent differences between patients — only 18.7% represents within-patient change over time. This is an extremely high ICC, confirming that ignoring the repeated-measures structure (i.e., running ordinary MLR on all 60,000 rows) would drastically underestimate standard errors and produce many spurious significant findings.
+
+---
+
+# ANALYSE
+
+## Linear Mixed Effect Model (LMM) — Longitudinal (all 3 time points)
+
+A **Linear Mixed Effect Model (LMM)** extends standard linear regression by adding **random effects** — parameters that vary across higher-level grouping units (patients, in this case). This allows the model to correctly account for the within-patient correlation confirmed by ICC = 0.813.
+
+The general LMM formula fitted here is:
+
+$$\text{HbA1c}_{ij} = \underbrace{(\beta_0 + u_{0i})}_{\text{patient-specific intercept}} + \beta_1 \cdot \text{time}_{ij} + \beta_2 \cdot \mathbf{X}_{ij} + \varepsilon_{ij}$$
+
+Where:
+
+- $$\beta_0$$ = population-average HbA1c intercept (grand mean baseline)
+- $$u_{0i} \sim N(0, \sigma^2_{\text{between}})$$ = patient-specific deviation from that mean (the **random intercept**)
+- $$\beta_1, \beta_2$$ = **fixed effects** — population-level associations for time and covariates
+- $$\varepsilon_{ij} \sim N(0, \sigma^2_{\text{within}})$$ = residual within-patient error
+
+A **model-building strategy** is used: four progressively richer models are fitted and compared, rather than fitting only one. This demonstrates how adding predictors improves fit and isolates the contribution of each component.
+
+### Null Model (ICC reference — already computed above)
+
+The null model contains **no predictors** — only an overall intercept and a random intercept per patient. Its purpose is not to answer the research question, but to decompose total HbA1c variance into two components: stable between-patient differences and within-patient variation over time. The ICC derived from this model establishes the baseline justification for using LMM.
+
+The output includes:
+- **Fixed effects:** Only the intercept (grand mean HbA1c across all patients and time points).
+- **Random effects:** `σ²_between` (variance of patient-level random intercepts) and `σ²_within` (residual variance). Their ratio gives the ICC.
+
+```{r}
+lmm_null <- lmer(hb_a1c ~ 1 + (1 | patient_id), data = df, REML = TRUE)
+summary(lmm_null)
+performance::icc(lmm_null)
+```
+
+
+### Time-Only Model (unconditional growth)
+
+The time-only model adds `time_step` as the sole fixed-effect predictor, with no other covariates. This answers a foundational question: **does HbA1c change significantly over time at all?** If there is no significant time effect, adding covariates and testing interactions would be premature.
+
+This model is also called the **unconditional growth model** — it describes the average trajectory of HbA1c over time without conditioning on any patient characteristics.
+
+**How to interpret the output:**
+- The intercept estimates mean HbA1c at T1\_Pre (the reference level of `time_step`).
+- Coefficients for `time_stepT2_Mid` and `time_stepT3_Post` represent the *change* in HbA1c from baseline (T1\_Pre) at each time point, averaged across all patients.
+- A significant negative coefficient means HbA1c has decreased by that amount relative to baseline.
+
+```{r}
+lmm_time <- lmer(hb_a1c ~ time_step + (1 | patient_id),
+                 data = df, REML = TRUE)
+summary(lmm_time)
+```
+
+**Result:** Both T2\_Mid (−0.40%) and T3\_Post (−0.71%) show highly significant declines from baseline (both p < 0.0001), confirming a meaningful time trend even before accounting for any covariates.
+
+
+### Full Fixed-Effects Model (main inferential model)
+
+This is the **main adjusted model** — it adds all available covariates alongside time, providing simultaneous estimates of each predictor's independent association with HbA1c after controlling for all others. This model answers the question: *What is the association between each covariate and HbA1c, holding all other covariates constant?*
+
+**Formula anatomy:**
+
+- `hb_a1c ~` — the outcome variable
+- `time_step + age + gender + bmi + ...` — **fixed effects**, representing population-average associations
+- `(1 | patient_id)` — **random intercept**, giving each patient their own baseline HbA1c level
+- `REML = TRUE` — Restricted Maximum Likelihood is used to obtain unbiased estimates of variance components (standard for final model reporting)
+
+`lme4::isSingular()` checks whether the model is over-parameterised — a sign that the random effect structure is too complex for the data. A result of `FALSE` means the model converged properly and all variance components are non-zero.
+
+```{r}
+lmm_full <- lmer(
+  hb_a1c ~ time_step + age + gender + bmi +
+    physical_activity_level + diet_score + sleep_hours +
+    medication_adherence + intervention_strength + comorbidity_level +
+    (1 | patient_id),
+  data = df, REML = TRUE
+)
+
+summary(lmm_full)
+lme4::isSingular(lmm_full)   # check for over-parameterisation
+```
+
+**Result:** `isSingular() = FALSE` — the model converged cleanly. All fixed-effect predictors except gender (Female) and intervention (Standard) are statistically significant.
+
+
+### Random Slope Model (do patients differ in rate of change?)
+
+The random intercept model assumes all patients share the *same average rate of change* over time (the same slope), though they start at different baselines. The random slope model relaxes this by allowing **both** the intercept (starting level) and the slope (rate of change over time) to vary across patients.
+
+This model answers: *Do patients differ not only in their baseline HbA1c, but also in how fast their HbA1c changes over time?*
+
+`(1 + time_num | patient_id)` specifies:
+- `1` = random intercept (patient's own baseline)
+- `time_num` = random slope (patient's own rate of change — positive = slower improvement, negative = faster improvement)
+- These two are allowed to correlate within each patient.
+
+`time_num` (0/1/2) must be numeric (not a factor) for `lmer` to estimate a continuous slope. `isSingular() = FALSE` means this more complex model is also supported by the data — patients do vary in their rate of change.
+
+```{r}
+lmm_slope <- lmer(
+  hb_a1c ~ time_step + age + gender + bmi +
+    physical_activity_level + diet_score + sleep_hours +
+    medication_adherence + intervention_strength + comorbidity_level +
+    (1 + time_num | patient_id),
+  data = df, REML = TRUE
+)
+
+lme4::isSingular(lmm_slope)
+```
+
+**Result:** `isSingular() = FALSE` — the random slope model is supported by the data. However, because the primary clinical question concerns **group-level trajectories** (does intervention strength change the pattern?), the interaction model below is the more relevant model.
+
+
+### Interaction Model (time × intervention — main clinical question)
+
+This model directly addresses the **research question** by testing whether intervention strength groups follow different HbA1c trajectories over time. The `*` operator in R creates both the main effects *and* all pairwise interaction terms simultaneously:
+
+`time_step * intervention_strength` expands to:
+`time_step + intervention_strength + time_step:intervention_strength`
+
+The interaction terms (`time_step:intervention_strength`) test whether the **difference between intervention groups changes across time points** — i.e., do groups diverge as the study progresses? This is the clinical question: does Intensive intervention produce a steeper HbA1c decline than Weak intervention, and does this gap widen over time?
+
+> **Critical interpretation rule:** When a statistically significant interaction is present, **main effects must not be interpreted in isolation**. The main effect of `time_step` describes only the Weak group (reference); the main effect of `intervention_strength` describes only T1\_Pre (reference). Always use `emmeans()` to obtain properly marginalised cell-level estimates.
+
+```{r}
+lmm_int <- lmer(
+  hb_a1c ~ time_step * intervention_strength +
+    age + gender + bmi + physical_activity_level + diet_score +
+    sleep_hours + medication_adherence + comorbidity_level +
+    (1 | patient_id),
+  data = df, REML = TRUE
+)
+
+summary(lmm_int)
+```
+
+**Result:** All four interaction terms are highly significant (all p < 0.0001), confirming that intervention groups diverge in their HbA1c trajectories over time. The Intensive group shows the steepest decline.
+
+
+### Model Comparison (use ML, not REML, for fixed-effects comparison)
+
+Formal model comparison determines which of the four models best fits the data, justifying the model chosen for final inference. Two complementary approaches are used:
+
+1. **Likelihood Ratio Test (LRT) via `anova()`** — valid for **nested models** (where one model is a special case of another by removing terms). Tests whether the improvement in model fit when adding predictors is statistically significant.
+2. **Akaike Information Criterion (AIC)** — valid for both nested and non-nested models. Lower AIC = better balance of fit and parsimony. A difference of > 10 AIC units is considered strong evidence in favour of the lower-AIC model.
+
+> **Why refit with REML = FALSE?** REML (Restricted Maximum Likelihood) cannot validly compare models with *different fixed-effect structures* because it optimises a likelihood that has been restricted to remove fixed effects. ML (Maximum Likelihood) must be used for fixed-effects comparisons. REML is used only for the final model's parameter estimates.
+
+```{r}
+lmm_null_ml  <- update(lmm_null,  REML = FALSE)
+lmm_time_ml  <- update(lmm_time,  REML = FALSE)
+lmm_full_ml  <- update(lmm_full,  REML = FALSE)
+lmm_int_ml   <- update(lmm_int,   REML = FALSE)
+
+anova(lmm_null_ml, lmm_time_ml, lmm_full_ml)
+AIC(lmm_null_ml, lmm_time_ml, lmm_full_ml, lmm_int_ml)
+```
+
+**Results:**
+
+| Model | AIC | Interpretation |
+|---|---|---|
+| Null | 154,667 | Baseline — no predictors |
+| Time-only | 134,788 | −19,879 improvement; time is highly significant |
+| Full covariates | 101,920 | −32,868 further improvement; covariates essential |
+| Interaction | **101,119** | −801 further improvement; interaction significant |
+
+The interaction model has the lowest AIC and is the best-fitting model. Each step's improvement is confirmed as statistically significant by the LRT (all p < 2.2×10⁻¹⁶).
+
+
+# ASSESSMENT
+
+After fitting the final model, its overall explanatory power and residual behaviour must be assessed to confirm it is well-specified and that conclusions are trustworthy.
+
+**R² for LMMs (Nakagawa & Schielzeth, 2013):**
+
+LMMs have two R² values because they contain both fixed and random effects:
+
+- **R²m (marginal)** = proportion of total variance explained by **fixed effects only** (time, BMI, diet, adherence, etc.)
+- **R²c (conditional)** = proportion of total variance explained by **fixed + random effects combined** (i.e., including the patient-level random intercept)
+
+A large gap between R²m and R²c tells you the random intercept is absorbing substantial between-patient variance — further confirming LMM is essential.
+
+```{r}
+MuMIn::r.squaredGLMM(lmm_full)
+performance::r2(lmm_full)
+performance::icc(lmm_full)
+```
+
+**Results:** R²m = 0.368, R²c = 0.974. The fixed predictors alone explain 36.8% of variance; once patient-level random intercepts are added, 97.4% is explained. The gap (≈60%) represents stable between-patient differences that cannot be explained by the measured covariates — confirming LMM is strongly justified.
+
+**Residual diagnostics:**
+
+Two plots are used to check whether the model residuals satisfy LMM assumptions:
+
+- **Residuals vs fitted:** Should show a random scatter around zero with no systematic pattern (no funnel, no curve). Patterns would indicate heteroscedasticity or a missing nonlinear term.
+- **Q-Q plot of residuals:** Residuals (not raw HbA1c) should be approximately normally distributed. Points close to the diagonal line indicate the normality assumption holds.
+
+```{r}
+#| fig-width: 6
+#| fig-height: 5
+
+plot(lmm_full)                                    # residuals vs fitted
+qqnorm(resid(lmm_full)); qqline(resid(lmm_full))  # normality of residuals
+```
+
+
+### Marginal Means after Interaction
+
+When a statistically significant interaction is present in the model, the main effects of `time_step` and `intervention_strength` are **conditional estimates** — they apply only to the reference group of the other variable. To correctly summarise the model's predictions across all combinations of time and intervention, **estimated marginal means (EMMs)** are computed.
+
+`emmeans()` calculates the model-predicted mean HbA1c at each cell of the time × intervention grid, **averaged (marginalised) over** all other covariates (gender, physical activity, adherence, comorbidity). This gives a fair, covariate-adjusted comparison across groups.
+
+`contrast()` then performs all pairwise comparisons **within each intervention group across time**, with **Bonferroni correction** applied to control the familywise Type I error rate across multiple simultaneous tests.
+
+> **Rule:** When an interaction term is significant, always use `emmeans()` to extract cell-level estimates rather than reading the regression table's main effects directly.
+
+```{r}
+emm_int <- emmeans::emmeans(lmm_int, ~ time_step | intervention_strength)
+emm_int
+
+emmeans::contrast(emm_int, method = "pairwise", adjust = "bonferroni")
+```
+
+```{r}
+#| fig-width: 8
+#| fig-height: 5
+
+emmeans::emmip(lmm_int, intervention_strength ~ time_step, CIs = TRUE) +
+  scale_colour_manual(values = c("Weak"      = "#e74c3c",
+                                 "Standard"  = "#f39c12",
+                                 "Intensive" = "#27ae60")) +
+  labs(
+    title    = "Figure 2. HbA1c Trajectories by Intervention Strength",
+    subtitle = "Estimated marginal means from LMM (95% CI shaded)",
+    x        = "Time Point",
+    y        = "HbA1c (%) — Estimated Marginal Mean",
+    colour   = "Intervention Strength"
+  ) +
+  theme_bw(base_size = 12)
+```
+
+### LMM Results - Interaction Model
+
+> **Why `lmm_int` over `lmm_full`?** Model comparison confirmed `lmm_int` has the lowest AIC (101,119 vs 101,920) and all four interaction terms are statistically significant (p < 0.0001). The interaction model is therefore both statistically superior and more clinically informative.
+
+### Bonferroni-Corrected Contrasts Across Intervention Groups at T3_Post
+
+While the previous emmeans block compared time points *within* each intervention group, this block answers the complementary question: **At the study endpoint (T3\_Post), do the three intervention groups differ significantly from each other?**
+
+`emmeans()` is called with the formula `~ intervention_strength | time_step`, fixing `time_step = "T3_Post"` so comparisons are made only at the final measurement. Bonferroni correction is applied across the three pairwise contrasts (Weak vs Standard, Weak vs Intensive, Standard vs Intensive) to control the familywise error rate.
+
+```{r}
+emm_t3 <- emmeans::emmeans(lmm_int, ~ intervention_strength | time_step,
+                            at = list(time_step = "T3_Post"))
+emm_t3
+
+emmeans::contrast(emm_t3, method = "pairwise", adjust = "bonferroni")
+```
+
+At T3_Post (endpoint), the estimated marginal HbA1c means are:
+
+- **Weak**: 8.238% (95% CI: 8.197–8.279)
+- **Standard**: 8.158% (95% CI: 8.130–8.186)
+- **Intensive**: 8.036% (95% CI: 8.001–8.071)
+
+All three pairwise comparisons are statistically significant after Bonferroni correction:
+
+| Contrast | Estimate | p-value |
+|---|---|---|
+| Weak − Standard | +0.080% | 0.0039 |
+| Weak − Intensive | +0.202% | < 0.0001 |
+| Standard − Intensive | +0.122% | < 0.0001 |
+
+At the study endpoint, Intensive intervention achieves HbA1c 0.202% lower than Weak and 0.122% lower than Standard, with all differences statistically significant. This confirms that all three intervention groups differ meaningfully at T3_Post — not just Intensive vs Weak.
+
+
+### Forest Plot — Fixed Effects of lmm_full
+
+A forest plot provides a compact, visual overview of all fixed-effect coefficients from the model — allowing the reader to quickly identify which predictors have the largest and most precise effects, and which cross zero (non-significant). Each point represents an estimated coefficient and each horizontal bar represents the 95% confidence interval.
+
+- **Points to the left** of the dashed zero line (shown in red) indicate an association with **lower HbA1c** (beneficial).
+- **Points to the right** (shown in blue) indicate an association with **higher HbA1c** (detrimental).
+- Intervals that **cross zero** indicate non-significant predictors.
+- The **length of the CI bar** reflects estimate precision — shorter bars = more precise.
+
+```{r}
+#| fig-width: 8
+#| fig-height: 6
+
+sjPlot::plot_model(
+  lmm_full,
+  type         = "est",
+  show.values  = TRUE,
+  show.p       = TRUE,
+  value.offset = 0.35,
+  title = "Figure 4. Fixed-Effect Estimates from LMM (lmm_full)\nReference: T1_Pre, Male, Low Activity, Poor Adherence, Weak Intervention, Low Comorbidity"
+) +
+  theme_bw(base_size = 11) +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey40")
+```
+
+The forest plot shows each fixed-effect coefficient with its 95% CI. Points to the left of the dashed zero line (red) indicate lower HbA1c; points to the right (blue) indicate higher HbA1c. Key take-aways:
+
+- **Largest HbA1c-lowering effects**: Physical Activity High (−0.52***), Sleep Hours (−0.41***), Time T3_Post (−0.42***), Diet Score (−0.32***), Medication Adherence Good (−0.36***).
+- **HbA1c-raising effects**: BMI (+0.09***) and Comorbidity High (+0.06*).
+- **Non-significant**: Gender (Female) and Comorbidity Medium — their CIs cross zero.
+- **Intervention effects in lmm_full**: Standard is non-significant (−0.03); Intensive is modest (−0.08**). The interaction model (`lmm_int`) is more informative here, as the intervention effect grows substantially over time.
+
+---
+
+# PRESENT
+
+## Final Results
+
+### Final Model Table
+
+The table below is the primary results table for this analysis, reporting fixed-effect estimates from the best-fitting model (`lmm_int`) with 95% confidence intervals, p-values, random-effect variance components, ICC, R²m, R²c, and AIC — all in a single publication-ready format.
+
+```{r}
+sjPlot::tab_model(
+  lmm_int,
+  show.re.var = TRUE,
+  show.icc    = TRUE,
+  show.r2     = TRUE,
+  show.aic    = TRUE,
+  pred.labels = c(
+    "(Intercept)",
+    "Time: T2_Mid",
+    "Time: T3_Post",
+    "Intervention: Standard",
+    "Intervention: Intensive",
+    "Age",
+    "Gender: Female",
+    "BMI",
+    "Physical Activity: Moderate",
+    "Physical Activity: High",
+    "Diet Score",
+    "Sleep Hours",
+    "Medication Adherence: Moderate",
+    "Medication Adherence: Good",
+    "Comorbidity: Medium",
+    "Comorbidity: High",
+    "T2_Mid × Standard",
+    "T3_Post × Standard",
+    "T2_Mid × Intensive",
+    "T3_Post × Intensive"
+  ),
+  title = "Table 2: Linear Mixed Effect Model (with Interaction): Predictors of HbA1c (n = 60,000 observations; 20,000 patients)"
+)
+```
+
+
+### Final Trajectory Figure
+
+The plot below (Figure 2) shows the estimated marginal mean HbA1c trajectories by intervention group, adjusted for all covariates. This is the key visual summary of the main finding.
+
+```{r}
+#| fig-width: 8
+#| fig-height: 5
+
+emmeans::emmip(lmm_int, intervention_strength ~ time_step, CIs = TRUE) +
+  scale_colour_manual(values = c("Weak"      = "#e74c3c",
+                                 "Standard"  = "#f39c12",
+                                 "Intensive" = "#27ae60")) +
+  labs(
+    title    = "Figure 4. Estimated Marginal Mean HbA1c Trajectories by Intervention Strength",
+    subtitle = "Adjusted for age, gender, BMI, physical activity, diet, sleep, medication adherence, and comorbidity (95% CI)",
+    x        = "Time Point",
+    y        = "HbA1c (%) — Estimated Marginal Mean",
+    colour   = "Intervention Strength"
+  ) +
+  theme_bw(base_size = 12)
+```
+
+
+### Model Fit Summary
+
+```{r}
+# Store key fit indices for inline reporting
+r2_lmm  <- MuMIn::r.squaredGLMM(lmm_full)
+lmm_r2m <- r2_lmm[1, "R2m"]
+lmm_r2c <- r2_lmm[1, "R2c"]
+icc_val <- as.numeric(performance::icc(lmm_null)$ICC_adjusted)
+```
+
+| Metric | Value | Interpretation |
+|---|---|---|
+| ICC (null model) | 0.813 | 81.3% of HbA1c variance is between patients — LMM required |
+| R²m (marginal) | 0.368 | Fixed effects explain 36.8% of total variance |
+| R²c (conditional) | 0.974 | Fixed + random effects explain 97.4% of total variance |
+| AIC (lmm_int) | 101,119 | Best-fitting model across all four candidates |
+
+---
+
+## Conclusion
+
+This analysis examined longitudinal HbA1c trajectories in 20,000 patients with Type 2 Diabetes Mellitus across three time points (T1\_Pre, T2\_Mid, T3\_Post) using a Linear Mixed Effects Model (LMM). The null model Intraclass Correlation Coefficient (ICC) of **0.813** confirmed that 81.3% of total HbA1c variance is attributable to stable between-patient differences, making standard multiple linear regression inappropriate and validating the use of LMM as the analytical framework. The following conclusions address the primary and secondary objectives in turn.
+
+---
+
+### Primary Objective
+
+All four time × intervention interaction terms were statistically significant (all p < 0.0001), confirming that the three intervention groups followed divergent HbA1c trajectories across the study period. The **Intensive intervention** produced the steepest and largest decline in HbA1c, with patients achieving a mean adjusted HbA1c of **8.04%** at T3\_Post compared to 8.16% (Standard) and 8.24% (Weak). The total reduction from baseline to endpoint was 0.54% for Intensive, 0.41% for Standard, and 0.32% for Weak. These findings directly support the use of intensive intervention protocols as the most effective strategy for glycaemic reduction over time.
+
+---
+
+### Secondary Objectives
+
+1 — Overall HbA1c Change Over Time
+
+The time-only (unconditional growth) model confirmed a **statistically significant decline in HbA1c across all patients**, regardless of intervention group or any other covariate. Compared to baseline (T1\_Pre), mean HbA1c was **−0.40% lower at T2\_Mid** (t = −90.6, p < 0.0001) and **−0.71% lower at T3\_Post** (t = −160.0, p < 0.0001). This establishes that a meaningful temporal improvement in glycaemic control occurred over the study period at the population level, before any patient-level adjustment.
+
+2 — Patient-Level Predictors of HbA1c
+
+The full fixed-effects model (`lmm_full`) revealed the following significant independent predictors:
+
+**Beneficial (HbA1c-lowering) factors:**
+
+| Predictor | Estimate | p-value |
+|---|---|---|
+| Physical Activity: High vs Low | −0.52% | < 0.001 |
+| Sleep Hours (per additional hour) | −0.41% | < 0.001 |
+| Medication Adherence: Good vs Poor | −0.36% | < 0.001 |
+| Diet Score (per unit improvement) | −0.32% | < 0.001 |
+| Physical Activity: Moderate vs Low | −0.20% | < 0.001 |
+| Medication Adherence: Moderate vs Poor | −0.18% | < 0.001 |
+
+**Detrimental (HbA1c-raising) factors:**
+
+| Predictor | Estimate | p-value |
+|---|---|---|
+| BMI (per 1 kg/m²) | +0.09% | < 0.001 |
+| Comorbidity: High vs Low | +0.06% | 0.029 |
+
+Gender (Female) and Comorbidity (Medium) were not statistically significant, indicating no independent association with HbA1c after adjusting for other factors. Among all modifiable predictors, high physical activity, sleep hours, and good medication adherence emerged as the strongest individual contributors to lower HbA1c.
+
+3 — Adjusted Endpoint Comparisons Across Intervention Groups
+
+Estimated marginal means (EMMs), adjusted for all covariates, showed that the three groups started at nearly identical HbA1c levels at T1\_Pre (~8.55–8.58%) but diverged progressively over time.
+
+At T3\_Post, Bonferroni-corrected pairwise contrasts confirmed that **all three intervention groups differed significantly from each other**:
+
+| Comparison at T3\_Post | Adjusted Mean Difference | p-value |
+|---|---|---|
+| Weak vs Standard | −0.080% | 0.004 |
+| Weak vs Intensive | −0.202% | < 0.001 |
+| Standard vs Intensive | −0.122% | < 0.001 |
+
+This confirms that even the Standard intervention conferred a significant advantage over Weak, and that the Intensive intervention produced meaningfully better glycaemic outcomes than both alternatives at the study endpoint.
+
+
+## Clinical Implications
+
+Taken together, these findings indicate that glycaemic control in T2DM is most effectively achieved through intensive intervention delivery combined with patient-level lifestyle optimisation. Physical activity, sleep, diet quality, and medication adherence are each independently modifiable and clinically actionable targets. Patients with high BMI require targeted weight management support, as BMI remains a significant independent predictor of poorer glycaemic control even after accounting for lifestyle and adherence. Clinicians should prioritise both the intensity of the intervention programme and the support of individual lifestyle behaviours to maximise HbA1c reduction over time.
+
+---
+
+# PUBLISH
+
+The completed code and data for this analysis are available at:
+
+```{r}
+#| echo: false
+
+cat("https://github.com/fizasaharudin-ux/T2DM_LMM.git")
+```
+
+---
+
+# Acknowledgement
+
+The dataset used in this analysis is a synthetic longitudinal cohort of 20,000 patients with Type 2 Diabetes Mellitus, measured across three time points (pre-, mid-, and post-intervention). It was sourced from Kaggle and was originally created for educational and analytical practice purposes.
+
+> **Data source:** Rana, S. *T2DM Longitudinal Treatment Outcomes* [Dataset]. Kaggle, 2024.
+> Available at: [https://www.kaggle.com/datasets/sahilrana034/t2dm-longitudinal-treatment-outcomes](https://www.kaggle.com/datasets/sahilrana034/t2dm-longitudinal-treatment-outcomes)
