@@ -79,20 +79,19 @@ All three intervention groups differed significantly from each other at the stud
 
 ```
 T2DM_LMM/
-├── T2DM_LMM.Rmd          # Main analysis — R Markdown source
-├── T2DM-LMM.html          # Rendered output (rmdformats::readthedown)
-├── style.css              # Custom CSS for HTML output
-└── README.md              # This file
+├── T2DM_LMM.qmd                                   # Main analysis — Quarto Markdown source
+├── T2DM-LMM.html                                  # Rendered output
+├── t2dm_longitudinal_strong_60000_rows (1).csv    # Excel raw dataset (downloaded from Kaggle - link at acknowledgement)
+├── style.css                                      # Custom CSS for HTML output
+└── README.md                                      # This file
 ```
-
-> The dataset CSV is not included in this repository. Download it directly from the Kaggle link above and place it in the project root before knitting.
 
 ---
 
 ## How to reproduce
 
 1. Clone this repository.
-2. Download the dataset from Kaggle and save as `t2dm_longitudinal_strong_60000_rows (1).csv` in the project root.
+2. Download the dataset from Kaggle or from this repository and save as `t2dm_longitudinal_strong_60000_rows (1).csv` in the project root.
 3. Open `T2DM_LMM.Rmd` in RStudio.
 4. Run — all required packages are installed automatically via `pacman::p_load()`.
 
